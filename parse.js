@@ -47,6 +47,12 @@ function expandTabs(line, col) {
   return out;
 }
 
+// Leading-whitespace expander for String.replace: one shared function
+// instead of a fresh closure per line.
+function expandLeadWs(ws) {
+  return expandTabs(ws);
+}
+
 // Fold a link label the way definitions and references compare it: trim,
 // collapse inner whitespace runs to one space, then Unicode case-fold.
 function foldLabel(label) {
@@ -959,14 +965,19 @@ function listToken(src, pos, st) {
       while (cur < end) {
         const rawLine = lineAt(cur);
         const nextLine2 = rawLine;
-        const withoutTabs = nextLine2.replace(LEAD_WS, (ws) => expandTabs(ws));
+        const c0 = nextLine2.charCodeAt(0);
+        const withoutTabs = (c0 === 9 || c0 === 32)
+          ? nextLine2.replace(LEAD_WS, expandLeadWs)
+          : nextLine2;
         if (fencesR.test(nextLine2)) break;
         if (headR.test(nextLine2)) break;
         if (htmlR.test(nextLine2)) break;
         if (bqR.test(nextLine2)) break;
         if (nextBull.test(nextLine2)) break;
         if (hrR.test(nextLine2)) break;
-        if (withoutTabs.search(NON_SPACE) >= indent || !nextLine2.trim()) {
+        const nsIdx = withoutTabs.search(NON_SPACE);
+        const isBlank = nsIdx === -1;
+        if (nsIdx >= indent || isBlank) {
           itemContents += '\n' + withoutTabs.slice(indent);
         } else {
           if (blankLine) break;
@@ -982,7 +993,7 @@ function listToken(src, pos, st) {
             : nextLine2;
           itemContents += '\n' + cont;
         }
-        blankLine = !nextLine2.trim();
+        blankLine = isBlank;
         cur += rawLine.length + 1;
         line = withoutTabs.slice(indent);
       }
@@ -1091,11 +1102,17 @@ function inlineTokens(src, st, tokens) {
 }
 
 function inlineInner(src, st, tokens) {
-  const masked = (src.includes('*') || src.includes('_') || src.includes('~'))
-    ? maskSrc(src, st)
-    : src;
-  const closers = scanClosers(masked);
+  const hasDelims = src.includes('*') || src.includes('_') || src.includes('~');
+  const masked = hasDelims ? maskSrc(src, st) : src;
+  const closers = hasDelims ? scanClosers(masked) : { star: -1, under: -1, tilde: -1 };
   return inlineLoop(src, masked, closers, st, tokens);
+}
+
+// First characters that can start an extended autolink (scheme, www., or
+// an email address): letters, digits, '.', '_', '+' and '-'.
+const URL_START = new Uint8Array(128);
+for (const c of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+-') {
+  URL_START[c.charCodeAt(0)] = 1;
 }
 
 function inlineLoop(src, masked, closers, st, tokens) {
@@ -1112,16 +1129,17 @@ function inlineLoop(src, masked, closers, st, tokens) {
     keepPrev = false;
     let m;
     let tok;
+    const ch = src.charCodeAt(pos);
 
     // escape
-    if ((m = execAt(ESCAPE_S, src, pos))) {
+    if (ch === 92 && (m = execAt(ESCAPE_S, src, pos))) {
       tokens.push({ type: 'escape', raw: m[0], text: m[1] });
       pos += m[0].length;
       continue;
     }
 
     // tag
-    if ((m = execAt(INLINE_TAG_S, src, pos))) {
+    if (ch === 60 && (m = execAt(INLINE_TAG_S, src, pos))) {
       if (!st.inLink && START_A.test(m[0])) st.inLink = true;
       else if (st.inLink && END_A.test(m[0])) st.inLink = false;
       if (!st.inRawBlock && START_PRE.test(m[0])) st.inRawBlock = true;
@@ -1139,14 +1157,14 @@ function inlineLoop(src, masked, closers, st, tokens) {
     }
 
     // link
-    if ((tok = tryLink(src, pos, st))) {
+    if ((ch === 91 || ch === 33) && (tok = tryLink(src, pos, st))) {
       tokens.push(tok);
       pos += tok.raw.length;
       continue;
     }
 
     // reflink / nolink
-    {
+    if (ch === 91 || ch === 33) {
       const r = tryReflink(src, pos, st);
       if (r) {
         if (r.tok.type === 'text') {
@@ -1166,14 +1184,14 @@ function inlineLoop(src, masked, closers, st, tokens) {
     }
 
     // em & strong
-    if ((tok = tryEmStrong(src, pos, masked, closers, prevChar, st))) {
+    if ((ch === 42 || ch === 95) && (tok = tryEmStrong(src, pos, masked, closers, prevChar, st))) {
       tokens.push(tok);
       pos += tok.raw.length;
       continue;
     }
 
     // code span
-    if ((m = execAt(CODE_SPAN_S, src, pos))) {
+    if (ch === 96 && (m = execAt(CODE_SPAN_S, src, pos))) {
       let text = m[2].replace(NL_GLOBAL, ' ');
       const hasNonSpace = NON_SPACE.test(text);
       const hasSpaceBoth = text.startsWith(' ') && text.endsWith(' ');
@@ -1184,21 +1202,21 @@ function inlineLoop(src, masked, closers, st, tokens) {
     }
 
     // hard break
-    if ((m = execAt(BR_S, src, pos))) {
+    if ((ch === 32 || ch === 92) && (m = execAt(BR_S, src, pos))) {
       tokens.push({ type: 'br', raw: m[0] });
       pos += m[0].length;
       continue;
     }
 
     // strikethrough
-    if ((tok = tryDel(src, pos, masked, closers, prevChar, st))) {
+    if (ch === 126 && (tok = tryDel(src, pos, masked, closers, prevChar, st))) {
       tokens.push(tok);
       pos += tok.raw.length;
       continue;
     }
 
     // autolink
-    if ((m = execAt(AUTOLINK_S, src, pos))) {
+    if (ch === 60 && (m = execAt(AUTOLINK_S, src, pos))) {
       let text;
       let href;
       if (m[2] === '@') {
@@ -1221,7 +1239,7 @@ function inlineLoop(src, masked, closers, st, tokens) {
     }
 
     // extended autolink (www / scheme / email), never inside a link
-    if (!st.inLink && (tok = tryUrl(src, pos, st))) {
+    if (!st.inLink && URL_START[ch] === 1 && (tok = tryUrl(src, pos, st))) {
       tokens.push(tok);
       pos += tok.raw.length;
       continue;
