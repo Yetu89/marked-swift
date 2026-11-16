@@ -1,18 +1,22 @@
-// MarkedSwift driver: renders every case in the harness input file
-// with parse() and writes the HTML strings, in order, to the output
-// file. The harness mounts the cases at /input/cases.json and expects
-// /output/html.json; both locations can be overridden for local runs.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+// Driver the harness runs as `node /bot/main.ts` (Node 22+, erasable TS).
+// It reads every case from /input/cases.json, renders each one alone with
+// parse() from parse.js, and writes the HTML strings in order to
+// /output/html.json. Outside a container the MAKEFUN_INPUT_DIR and
+// MAKEFUN_OUTPUT_DIR variables stand in for /input and /output.
+
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from './parse.js';
 
-const inDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const inputDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
+const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-const cases = JSON.parse(readFileSync(join(inDir, 'cases.json'), 'utf8'));
-const html = [];
-for (const c of cases) {
-  html.push(parse(c.markdown));
+const rawCases = readFileSync(join(inputDir, 'cases.json'), 'utf8');
+const cases = JSON.parse(rawCases) as { id: string; markdown: string }[];
+
+const rendered: string[] = new Array(cases.length);
+for (let k = 0; k < cases.length; k++) {
+  rendered[k] = parse(cases[k].markdown);
 }
-mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, 'html.json'), JSON.stringify(html));
+
+writeFileSync(join(outputDir, 'html.json'), JSON.stringify(rendered));
